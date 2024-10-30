@@ -140,7 +140,9 @@ print(code)
 # ``hw_emu``, and ``hw``), and the target project folder name. Allo will automatically generate
 # the HLS project and invoke the compiler to generate the RTL design.
 
-mod = s.build(target="vitis_hls", mode="csyn", project="gemm.prj")
+# mod = s.build(target="vitis_hls", mode="csyn", project="gemm.prj")
+mod = s.build(target="vitis_hls", mode="csyn_verilator", project="gemm.prj")
+mod()
 
 # %%
 # You will see a ``gemm.prj`` folder is generated in the current directory:

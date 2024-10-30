@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # pylint: disable=consider-using-with, no-name-in-module, unused-argument
 
+import pyverilator
 import os
 import re
 import io
@@ -69,6 +70,8 @@ def copy_build_files(top, project, mode, platform="vivado_hls", script=None):
             mode = "csim"
         elif mode == "hw_emu":
             mode = "cosim"
+        elif mode == "csyn_verilator":
+            mode = "csyn"
         else:
             mode = "csyn"
         if mode != "custom":
@@ -85,7 +88,9 @@ def copy_build_files(top, project, mode, platform="vivado_hls", script=None):
                     if "set_top" in line:
                         line = "set_top " + top + "\n"
                     # pylint: disable=too-many-boolean-expressions
-                    if (
+                    if "-tb" in line:
+                        new_tcl += "#" + line
+                    elif (
                         ("csim_design" in line and "csim" in removed_mode)
                         or ("csynth_design" in line and "csyn" in removed_mode)
                         or ("cosim_design" in line and "cosim" in removed_mode)
@@ -232,6 +237,7 @@ class HLSModule:
                 assert self.mode in {
                     "csim",
                     "csyn",
+                    "csyn_verilator",
                     "sw_emu",
                     "hw_emu",
                     "hw",
@@ -376,15 +382,20 @@ class HLSModule:
                 )
                 mod(*args)
                 return
-            if self.mode == "csyn":
+            if self.mode == "csyn" or self.mode == "csyn_verilator":
                 cmd = f"cd {self.project}; vitis_hls -f run.tcl"
                 print(
                     f"[{time.strftime('%H:%M:%S', time.gmtime())}] Begin synthesizing project ..."
                 )
+                # Call Vitis to run tcl file
                 if shell:
                     subprocess.Popen(cmd, shell=True).wait()
                 else:
                     subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE).wait()
+                # Once synthesis is complete, generate verilator model
+                sim = pyverilator.PyVerilator.build('gemm.v',
+                    verilog_path = [os.getcwd()+'/gemm.prj/out.prj/solution1/impl/verilog'],
+                    add_verilator_args=['-Wno-WIDTH', '-Wno-STMTDLY', '--no-timing'])
                 return
             # Use Makefile (sw_emu, hw_emu, hw)
             assert "XDEVICE" in os.environ, "Please set XDEVICE in your environment"
