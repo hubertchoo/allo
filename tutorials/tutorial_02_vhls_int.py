@@ -5,7 +5,8 @@
 Vivado/Vitis HLS Backend
 ========================
 
-**Author**: Hongzheng Chen (hzchen@cs.cornell.edu)
+**Author**: Hubert Choo (hc2263@cornell.edu)
+This is an edit of the original tutorial 2 to utilise int32 types instead of float32
 
 
 In this tutorial, we will demonstrate how to leverage the Allo DSL to generate
@@ -17,7 +18,7 @@ First, we import the necessary packages.
 """
 
 import allo
-from allo.ir.types import float32
+from allo.ir.types import int32
 import numpy as np
 
 ##############################################################################
@@ -47,14 +48,12 @@ M, N, K = 32, 32, 32
 # This annotation is necessary for later optimizations, since Allo leverages
 # this information to generate correct intermediate buffers.
 
-
-def gemm(A: float32[M, K], B: float32[K, N]) -> float32[M, N]:
-    C: float32[M, N] = 0.0
+def gemm(A: int32[M, K], B: int32[K, N]) -> int32[M, N]:
+    C: int32[M, N] = 0
     for i, j in allo.grid(M, N):
         for k in allo.reduction(K):
             C[i, j] += A[i, k] * B[k, j]
     return C
-
 
 ##############################################################################
 # Scalar-Vector Product for GEMM
@@ -140,8 +139,16 @@ print(code)
 # ``hw_emu``, and ``hw``), and the target project folder name. Allo will automatically generate
 # the HLS project and invoke the compiler to generate the RTL design.
 
-mod = s.build(target="vitis_hls", mode="csyn", project="gemm.prj")
+mod = s.build(target="vitis_hls", mode="csyn_verilator", project="gemm.prj")
 mod()
+
+# mod = s.build(target="vitis_hls", mode="csim", project="gemm.prj")
+# # functional correctness test
+# A = np.random.randint(0, 10, size=(M, K), dtype=np.int32)
+# B = np.random.randint(0, 10, size=(K, N), dtype=np.int32)
+# output = np.zeros((M, N)).astype(np.int32)
+# mod(A, B, output)
+# np.testing.assert_allclose(np.dot(A, B), output)
 
 # %%
 # You will see a ``gemm.prj`` folder is generated in the current directory:
