@@ -262,14 +262,14 @@ class HLSModule:
                 header, self.args = separate_header(self.hls_code, self.top_func_name)
                 with open(f"{project}/kernel.h", "w", encoding="utf-8") as outfile:
                     outfile.write(header)
-                self.hls_code = postprocess_hls_code(self.hls_code, self.top_func_name)
+                self.hls_code = postprocess_hls_code(self.hls_code, self.mode, self.top_func_name)
                 for lib in self.ext_libs:
                     for header in lib.headers:
                         header = header.split("/")[-1]
                         with open(
                             f"{project}/{header}", "r", encoding="utf-8"
                         ) as infile:
-                            new_code = postprocess_hls_code(infile.read())
+                            new_code = postprocess_hls_code(infile.read(), self.mode)
                         with open(
                             f"{project}/{header}", "w", encoding="utf-8"
                         ) as outfile:
@@ -279,7 +279,7 @@ class HLSModule:
                         with open(
                             f"{project}/{cpp_file}", "r", encoding="utf-8"
                         ) as infile:
-                            new_code = postprocess_hls_code(infile.read())
+                            new_code = postprocess_hls_code(infile.read(), self.mode)
                         with open(
                             f"{project}/{cpp_file}", "w", encoding="utf-8"
                         ) as outfile:
