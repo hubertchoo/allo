@@ -63,6 +63,8 @@ def copy_build_files(top, project, mode, platform="vivado_hls", script=None):
     path = os.path.dirname(__file__)
     path = os.path.join(path, "../harness/")
     original_mode = mode
+    if ( original_mode == "csyn_xsim" ):
+        os.system("cp " + path + "xsim/generate_ip_sim.tcl " + project)
     if platform in {"vivado_hls", "vitis_hls"}:
         os.system("cp " + path + f"{platform.split('_')[0]}/* " + project)
         if mode == "debug":
@@ -72,6 +74,8 @@ def copy_build_files(top, project, mode, platform="vivado_hls", script=None):
         elif mode == "hw_emu":
             mode = "cosim"
         elif mode == "csyn_verilator":
+            mode = "csyn"
+        elif mode == "csyn_xsim":
             mode = "csyn"
         else:
             mode = "csyn"
@@ -89,7 +93,7 @@ def copy_build_files(top, project, mode, platform="vivado_hls", script=None):
                     if "set_top" in line:
                         line = "set_top " + top + "\n"
                     # pylint: disable=too-many-boolean-expressions
-                    if "-tb" in line and original_mode in ["csyn_verilator"]:
+                    if "-tb" in line and original_mode in ["csyn_verilator", "csyn_xsim"]:
                         new_tcl += "#" + line
                     elif (
                         ("csim_design" in line and "csim" in removed_mode)
@@ -239,6 +243,7 @@ class HLSModule:
                     "csim",
                     "csyn",
                     "csyn_verilator",
+                    "csyn_xsim",
                     "sw_emu",
                     "hw_emu",
                     "hw",
@@ -383,7 +388,7 @@ class HLSModule:
                 )
                 mod(*args)
                 return
-            if self.mode in ["csyn", "csyn_verilator"]:
+            if self.mode in ["csyn", "csyn_verilator", "csyn_xsim"]:
                 cmd = f"cd {self.project}; vitis_hls -f run.tcl"
                 print(
                     f"[{time.strftime('%H:%M:%S', time.gmtime())}] Begin synthesizing project ..."
@@ -400,6 +405,30 @@ class HLSModule:
                         verilog_path = [os.getcwd() + "/out.prj/solution1/impl/verilog"],
                         add_verilator_args=['-Wno-WIDTH', '-Wno-STMTDLY', '--no-timing'])
                     os.chdir("..")
+                if self.mode == "csyn_xsim":
+                    os.chdir(self.project)
+                    # Path to the Tcl script
+                    tcl_script_path = "./generate_ip_sim.tcl"
+                    # Read the Tcl script
+                    with open(tcl_script_path, "r") as file:
+                        lines = file.readlines()
+                    # Modify the line to set the top module
+                    with open(tcl_script_path, "w") as file:
+                        for line in lines:
+                            # Look for the line that sets the top property
+                            if line.strip().startswith("set_property top") and "current_fileset -simset" in line:
+                                # Replace "top_module_name" with "top_func_name"
+                                line = f'set_property top {self.top_func_name} [current_fileset -simset]\n'
+                            file.write(line)
+                            
+                    # Once synthesis is complete and Tcl script is generated, generate xsim model for csyn_xsim mode
+                    cmd = f"vivado -mode batch -source generate_ip_sim.tcl"
+                    if shell:
+                        subprocess.Popen(cmd, shell=True).wait()
+                    else:
+                        subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE).wait()
+                    os.chdir("..")
+                    return
                 return
             # Use Makefile (sw_emu, hw_emu, hw)
             assert "XDEVICE" in os.environ, "Please set XDEVICE in your environment"
