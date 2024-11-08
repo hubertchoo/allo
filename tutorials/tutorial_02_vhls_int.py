@@ -139,16 +139,17 @@ print(code)
 # ``hw_emu``, and ``hw``), and the target project folder name. Allo will automatically generate
 # the HLS project and invoke the compiler to generate the RTL design.
 
-mod = s.build(target="vitis_hls", mode="csyn_verilator", project="gemm.prj")
-mod()
 
 # mod = s.build(target="vitis_hls", mode="csim", project="gemm.prj")
-# # functional correctness test
-# A = np.random.randint(0, 10, size=(M, K), dtype=np.int32)
-# B = np.random.randint(0, 10, size=(K, N), dtype=np.int32)
-# output = np.zeros((M, N)).astype(np.int32)
-# mod(A, B, output)
-# np.testing.assert_allclose(np.dot(A, B), output)
+mod = s.build(target="vitis_hls", mode="csyn_verilator", project="gemm.prj")
+
+# functional correctness test
+A = np.random.randint(0, 10, size=(M, K), dtype=np.int32)
+B = np.random.randint(0, 10, size=(K, N), dtype=np.int32)
+output = np.zeros((M, N)).astype(np.int32)
+mod(A, B, output)
+print(output)
+np.testing.assert_allclose(output, np.dot(A, B))
 
 # %%
 # You will see a ``gemm.prj`` folder is generated in the current directory:

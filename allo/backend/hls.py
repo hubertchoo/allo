@@ -25,6 +25,7 @@ from .vitis import (
     read_tensor_from_file,
 )
 from .ip import IPModule, c2allo_type
+from .pyverilator_ip import PyverilatorIPModule
 from .report import parse_xml
 from ..passes import (
     _mlir_lower_pipeline,
@@ -149,10 +150,11 @@ def separate_header(hls_code, top=None):
             arg_type = line.strip()
             _, var = arg_type.rsplit(" ", 1)
             comma = "," if var[-1] == "," else ""
+            ele_name = arg_type.split("[")[0].split(" ")[1].strip()
             ele_type = arg_type.split("[")[0].split(" ")[0].strip()
             allo_type = c2allo_type[ele_type]
             shape = tuple(s.split("]")[0] for s in arg_type.split("[")[1:])
-            args.append((allo_type, shape))
+            args.append((ele_name, allo_type, shape))
             if "[" in var:  # array
                 var = var.split("[")[0]
                 sig_str += "  " + ele_type + " *" + var + f"{comma}\n"
@@ -382,7 +384,7 @@ class HLSModule:
                     headers=[f"{cwd}/{self.project}/kernel.h"],
                     impls=[f"{cwd}/{self.project}/kernel.cpp"],
                     signature=[
-                        f"{dtype}[{', '.join(shape)}]" for dtype, shape in self.args
+                        f"{dtype}[{', '.join(shape)}]" for _, dtype, shape in self.args
                     ],
                     link_hls=True,
                 )
@@ -405,6 +407,12 @@ class HLSModule:
                         verilog_path = [os.getcwd() + "/out.prj/solution1/impl/verilog"],
                         add_verilator_args=['-Wno-WIDTH', '-Wno-STMTDLY', '--no-timing'])
                     os.chdir("..")
+                    # Run simulation on Verilator model
+                    mod = PyverilatorIPModule(
+                        pyverilator_sim=sim,
+                        signature=[f"{name} {dtype}[{', '.join(shape)}]" for name, dtype, shape in self.args]
+                    )
+                    mod(*args)
                 if self.mode == "csyn_xsim":
                     os.chdir(self.project)
                     # Path to the Tcl script
@@ -420,7 +428,6 @@ class HLSModule:
                                 # Replace "top_module_name" with "top_func_name"
                                 line = f'set_property top {self.top_func_name} [current_fileset -simset]\n'
                             file.write(line)
-                            
                     # Once synthesis is complete and Tcl script is generated, generate xsim model for csyn_xsim mode
                     cmd = f"vivado -mode batch -source generate_ip_sim.tcl"
                     if shell:
