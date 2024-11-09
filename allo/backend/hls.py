@@ -406,13 +406,14 @@ class HLSModule:
                     sim = pyverilator.PyVerilator.build(self.top_func_name,
                         verilog_path = [os.getcwd() + "/out.prj/solution1/impl/verilog"],
                         add_verilator_args=['-Wno-WIDTH', '-Wno-STMTDLY', '--no-timing'])
-                    os.chdir("..")
                     # Run simulation on Verilator model
                     mod = PyverilatorIPModule(
+                        top_func_name=self.top_func_name,
                         pyverilator_sim=sim,
                         signature=[f"{name} {dtype}[{', '.join(shape)}]" for name, dtype, shape in self.args]
                     )
                     mod(*args)
+                    os.chdir("..")
                 if self.mode == "csyn_xsim":
                     os.chdir(self.project)
                     # Path to the Tcl script

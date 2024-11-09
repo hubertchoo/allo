@@ -48,8 +48,9 @@ class ArrayApMemInterface(PythonRTLArgumentInterface):
 
 class PyverilatorIPModule:
     def __init__(
-        self, pyverilator_sim, signature
+        self, top_func_name, pyverilator_sim, signature
     ):
+        self.top_func_name = top_func_name
         self.sim = pyverilator_sim
         self.signature = signature
         self.interface_map = {}
@@ -71,6 +72,7 @@ class PyverilatorIPModule:
         self.sim.io.ap_start = 1
 
     def run_module(self):
+        self.sim.start_vcd_trace(f"{self.top_func_name}.vcd")
         self.reset_module()
         while not self.sim.io.ap_done:
             for intf in self.interface_map.values():
