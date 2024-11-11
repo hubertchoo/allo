@@ -431,10 +431,31 @@ class HLSModule:
                             file.write(line)
                     # Once synthesis is complete and Tcl script is generated, generate xsim model for csyn_xsim mode
                     cmd = f"vivado -mode batch -source generate_ip_sim.tcl"
+                    
                     if shell:
                         subprocess.Popen(cmd, shell=True).wait()
                     else:
                         subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE).wait()
+                    
+                    # Open the "elaborate.sh" file, read its contents, replace the string, and save the changes
+                    # This is used to generate the xsimk.so file
+                    os.chdir("./ip_out/ip_out.sim/sim_1/behav/xsim")
+                    
+                    with open('elaborate.sh', 'r') as file:
+                        content = file.read()
+                        
+                    updated_content = content.replace('--debug typical', '--debug all -dll')
+
+                    with open('elaborate.sh', 'w') as file:
+                        file.write(updated_content)
+                        
+                    cmd = f"bash elaborate.sh"
+                    
+                    if shell:
+                        subprocess.Popen(cmd, shell=True).wait()
+                    else:
+                        subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE).wait()
+                        
                     os.chdir("..")
                     return
                 return
