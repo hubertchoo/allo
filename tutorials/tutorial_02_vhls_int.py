@@ -20,6 +20,7 @@ First, we import the necessary packages.
 import allo
 from allo.ir.types import int32
 import numpy as np
+from allo.backend.pyverilator_ip import ParallelIPModuleCollection, SequentialIPModuleCollection, IPCollectionModeContext
 
 ##############################################################################
 # Algorithm Definition
@@ -143,13 +144,58 @@ print(code)
 # mod = s.build(target="vitis_hls", mode="csim", project="gemm.prj")
 mod = s.build(target="vitis_hls", mode="csyn_verilator", project="gemm.prj")
 
-# functional correctness test
 A = np.random.randint(0, 10, size=(M, K), dtype=np.int32)
 B = np.random.randint(0, 10, size=(K, N), dtype=np.int32)
+C = np.random.randint(0, 10, size=(M, K), dtype=np.int32)
+D = np.random.randint(0, 10, size=(K, N), dtype=np.int32)
+
+##############################################################
+
 output = np.zeros((M, N)).astype(np.int32)
-mod(A, B, output)
+output2 = np.zeros((M, N)).astype(np.int32)
+
+with IPCollectionModeContext():
+    ip_collection = ParallelIPModuleCollection(
+        mod(A, B, output),
+        mod(C, D, output2)
+        )
+
+ip_collection()
+
+print("PARALLEL TEST")
+print("========================================")
+print(np.dot(A, B))
 print(output)
 np.testing.assert_allclose(output, np.dot(A, B))
+print("-----------------------------")
+print(np.dot(C, D))
+print(output2)
+np.testing.assert_allclose(output2, np.dot(C, D))
+
+##############################################################
+
+output = np.zeros((M, N)).astype(np.int32)
+output2 = np.zeros((M, N)).astype(np.int32)
+
+with IPCollectionModeContext():
+    ip_collection = SequentialIPModuleCollection(
+        mod(A, B, output),
+        mod(C, output, output2)
+        )
+
+ip_collection()
+
+print("SEQUENTIAL TEST")
+print("========================================")
+print(np.dot(A, B))
+print(output)
+np.testing.assert_allclose(output, np.dot(A, B))
+print("-----------------------------")
+print(np.dot(C, np.dot(A, B)))
+print(output2)
+np.testing.assert_allclose(output2, np.dot(C, np.dot(A, B)))
+
+
 
 # %%
 # You will see a ``gemm.prj`` folder is generated in the current directory:

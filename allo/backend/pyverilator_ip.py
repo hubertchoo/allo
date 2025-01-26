@@ -1,6 +1,8 @@
-import pyverilator
+# import pyverilator
 import numpy as np
 from abc import ABC, abstractmethod
+
+ip_collection_mode = False
 
 class PythonRTLArgumentInterface(ABC):
     # An abstract base class (ABC) cannot be instantiated on its own.
@@ -54,6 +56,7 @@ class PyverilatorIPModule:
         self.sim = pyverilator_sim
         self.signature = signature
         self.interface_map = {}
+        self.call_returns_self = False
 
     def parse_args(self, args):
         assert (len(args) == len(self.signature)), "Number of Python arguments do not match number of HLS arguments."
@@ -69,17 +72,93 @@ class PyverilatorIPModule:
         self.sim.clock.tick()
         self.sim.io.ap_rst = 0
         self.sim.clock.tick()
+
+    def start_module(self):
         self.sim.io.ap_start = 1
+
+    def sync_module(self):
+        for intf in self.interface_map.values():
+            intf.sync_interface()
 
     def run_module(self):
         self.sim.start_vcd_trace(f"{self.top_func_name}.vcd")
         self.reset_module()
+        self.start_module()
         while not self.sim.io.ap_done:
-            for intf in self.interface_map.values():
-                intf.sync_interface()
+            self.sync_module()
             self.sim.clock.tick()
         self.sim.io.ap_start = 0
 
+
     def __call__(self, *args):
         self.parse_args(args)
-        self.run_module()
+        if not ip_collection_mode:
+            self.run_module()
+
+class ParallelIPModuleCollection:
+    def __init__(self, *pyverilator_ip_modules):
+        self.pyverilator_ip_modules = list(pyverilator_ip_modules)
+
+    def reset_all_modules(self):
+        for ip_module in self.pyverilator_ip_modules:
+            ip_module.reset_module()
+
+    def start_all_modules(self):
+        for ip_module in self.pyverilator_ip_modules:
+            ip_module.start_module()
+
+    def run_all_modules(self):
+        def check_all_modules_done():
+            for ip_module in self.pyverilator_ip_modules:
+                if not ip_module.sim.io.ap_done:
+                    return False
+            return True
+
+        self.reset_all_modules()
+        self.start_all_modules()
+        while not check_all_modules_done():
+            # does each signal keep staying done HIGH, or is it only done HIGH for one cycle?
+            for ip_module in self.pyverilator_ip_modules:
+                ip_module.sync_module()
+                ip_module.sim.clock.tick()
+        for ip_module in self.pyverilator_ip_modules:
+            ip_module.sim.io.ap_start = 0
+
+    def __call__(self, *args):
+        self.run_all_modules()
+
+#######################################################
+
+class SequentialIPModuleCollection:
+    def __init__(self, *pyverilator_ip_modules):
+        self.pyverilator_ip_modules = list(pyverilator_ip_modules)
+
+    def reset_all_modules(self):
+        for ip_module in self.pyverilator_ip_modules:
+            ip_module.reset_module()
+
+    def run_all_modules(self):
+        self.reset_all_modules()
+
+        for curr_ip_module in self.pyverilator_ip_modules:
+            curr_ip_module.start_module()
+
+            while not curr_ip_module.sim.io.ap_done:
+                # Sync and tick for all modules
+                for ip_module in self.pyverilator_ip_modules:
+                    ip_module.sync_module()
+                    ip_module.sim.clock.tick()
+
+            curr_ip_module.sim.io.ap_start = 0
+
+    def __call__(self, *args):
+        self.run_all_modules()
+
+class IPCollectionModeContext:
+    def __enter__(self):
+        global ip_collection_mode
+        ip_collection_mode = True
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        global ip_collection_mode
+        ip_collection_mode = False

@@ -25,7 +25,9 @@ from .vitis import (
     read_tensor_from_file,
 )
 from .ip import IPModule, c2allo_type
-from .pyverilator_ip import PyverilatorIPModule
+from .pyverilator_ip import PyverilatorIPModule, ip_collection_mode
+from . import pyverilator_ip
+
 from .report import parse_xml
 from ..passes import (
     _mlir_lower_pipeline,
@@ -44,7 +46,7 @@ def is_available(backend="vivado_hls"):
         return os.system("which vivado_hls >> /dev/null") == 0
     return (
         os.system("which vitis_hls >> /dev/null") == 0
-        and os.environ.get("XDEVICE", None) is not None
+        # and os.environ.get("XDEVICE", None) is not None
     )
 
 
@@ -414,6 +416,9 @@ class HLSModule:
                     )
                     mod(*args)
                     os.chdir("..")
+                    if pyverilator_ip.ip_collection_mode:
+                        return mod
+                    return
                 if self.mode == "csyn_xsim":
                     os.chdir(self.project)
                     # Path to the Tcl script
