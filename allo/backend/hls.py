@@ -3,7 +3,9 @@
 # pylint: disable=consider-using-with, no-name-in-module, unused-argument
 
 import pyverilator
+import pyxsi
 import os
+import shutil
 import re
 import io
 import subprocess
@@ -27,7 +29,7 @@ from .vitis import (
 from .ip import IPModule, c2allo_type
 from .pyverilator_ip import PyverilatorIPModule, ip_collection_mode
 from . import pyverilator_ip
-
+from .pyxsi_ip import PyxsiIPModule
 from .report import parse_xml
 from ..passes import (
     _mlir_lower_pipeline,
@@ -378,7 +380,7 @@ class HLSModule:
             else:
                 raise RuntimeError(f"{self.platform} does not support {self.mode} mode")
         elif self.platform == "vitis_hls":
-            assert is_available("vitis_hls"), "vitis_hls is not available"
+            # assert is_available("vitis_hls"), "vitis_hls is not available"
             if self.mode == "csim":
                 cwd = os.getcwd()
                 mod = IPModule(
@@ -461,7 +463,31 @@ class HLSModule:
                     else:
                         subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE).wait()
                         
-                    os.chdir("..")
+                    # Run simulation on Verilator model
+
+                    os.chdir("./../../../../../..")
+                    destination_path = fr"./xsim.dir"
+                    source_path = fr"./{self.project}/ip_out/ip_out.sim/sim_1/behav/xsim/xsim.dir"
+                    if os.path.exists(destination_path):
+                        shutil.rmtree(destination_path)
+                    shutil.copytree(source_path, destination_path)
+                    
+                    destination_path = fr"./{self.top_func_name}_behav.wdb"
+                    source_path = fr"./{self.project}/ip_out/ip_out.sim/sim_1/behav/xsim/{self.top_func_name}_behav.wdb"
+                    shutil.copy(source_path, destination_path)
+                    
+                    sim = pyxsi.XSI(
+                        fr"./xsim.dir/{self.top_func_name}_behav/xsimk.so",
+                        language=pyxsi.VERILOG,
+                        tracefile=fr"./{self.top_func_name}_behav.wdb",
+                        )
+                    mod = PyxsiIPModule(
+                        top_func_name=self.top_func_name,
+                        pyxsi_sim=sim,
+                        signature=[f"{name} {dtype}[{', '.join(shape)}]" for name, dtype, shape in self.args],
+                        dtype=[f"{dtype}" for _, dtype, _ in self.args]
+                    )
+                    mod(*args)
                     return
                 return
             # Use Makefile (sw_emu, hw_emu, hw)
