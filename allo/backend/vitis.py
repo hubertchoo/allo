@@ -343,7 +343,7 @@ def codegen_host(top, module):
     return out_str
 
 
-def postprocess_hls_code(hls_code, top=None):
+def postprocess_hls_code(hls_code, mode=None, top=None):
     out_str = ""
     func_decl = False
     has_endif = False
@@ -360,14 +360,18 @@ def postprocess_hls_code(hls_code, top=None):
             func_decl = False
             out_str += line + "\n"
             # Add extra interfaces
-            for i, arg in enumerate(func_args):
-                out_str += f"  #pragma HLS interface m_axi port={arg} offset=slave bundle=gmem{i}\n"
+            if (mode != "csyn_verilator"):
+                for i, arg in enumerate(func_args):
+                    out_str += f"  #pragma HLS interface m_axi port={arg} offset=slave bundle=gmem{i}\n"
         elif func_decl:
             dtype, var = line.strip().rsplit(" ", 1)
             comma = "," if var[-1] == "," else ""
             if "[" in var:  # array
-                var = var.split("[")[0]
-                out_str += "  " + dtype + " *" + var + f"{comma}\n"
+                if (mode == "csyn_verilator"):
+                    out_str += "  " + dtype + " " + var + "\n"
+                else:
+                    var = var.split("[")[0]
+                    out_str += "  " + dtype + " *" + var + f"{comma}\n"
                 # only add array to interface
                 func_args.append(var)
             else:  # scalar

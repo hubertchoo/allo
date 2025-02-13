@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # pylint: disable=consider-using-with, no-name-in-module, too-many-branches
 
+import pyverilator
 import os
 import re
 import io
@@ -28,6 +29,7 @@ from .tapa import (
     codegen_tapa_host,
 )
 from .ip import IPModule, c2allo_type
+from . import pyverilator_ip
 from .report import parse_xml
 from ..passes import (
     _mlir_lower_pipeline,
@@ -64,7 +66,7 @@ def codegen_tcl(top, configs):
 # SPDX-License-Identifier: Apache-2.0
 
 #=============================================================================
-# run.tcl 
+# run.tcl
 #=============================================================================
 # Project name
 set hls_prj out.prj
@@ -97,7 +99,7 @@ open_solution "solution1"
     out_str += "# Run HLS\n"
     if "csim" in mode or "sw_emu" in mode:
         out_str += "csim_design -O\n"
-    if "csyn" in mode or "debug" in mode:
+    if "csyn" in mode or "debug" in mode or "csyn_verilator" in mode:
         out_str += "csynth_design\n"
     if "cosim" in mode or "hw_emu" in mode:
         out_str += "cosim_design\n"
@@ -142,10 +144,11 @@ def separate_header(hls_code, top=None):
             arg_type = line.strip()
             _, var = arg_type.rsplit(" ", 1)
             comma = "," if var[-1] == "," else ""
+            ele_name = arg_type.split("[")[0].split(" ")[1].strip()
             ele_type = arg_type.split("[")[0].split(" ")[0].strip()
             allo_type = c2allo_type[ele_type]
             shape = tuple(s.split("]")[0] for s in arg_type.split("[")[1:])
-            args.append((allo_type, shape))
+            args.append((ele_name, allo_type, shape))
             if "[" in var:  # array
                 var = var.split("[")[0]
                 sig_str += "  " + ele_type + " *" + var + f"{comma}\n"
@@ -249,6 +252,7 @@ class HLSModule:
             path = os.path.join(path, "../harness/")
             if platform in {"vivado_hls", "vitis_hls", "tapa"}:
                 os.system("cp " + path + f"{platform.split('_')[0]}/* " + project)
+                configs["mode"] = self.mode
                 with open(f"{project}/run.tcl", "w", encoding="utf-8") as outfile:
                     outfile.write(codegen_tcl(top_func_name, configs))
             copy_ext_libs(ext_libs, project)
@@ -256,6 +260,7 @@ class HLSModule:
                 assert self.mode in {
                     "csim",
                     "csyn",
+                    "csyn_verilator",
                     "sw_emu",
                     "hw_emu",
                     "hw",
@@ -280,14 +285,14 @@ class HLSModule:
                 header, self.args = separate_header(self.hls_code, self.top_func_name)
                 with open(f"{project}/kernel.h", "w", encoding="utf-8") as outfile:
                     outfile.write(header)
-                self.hls_code = postprocess_hls_code(self.hls_code, self.top_func_name)
+                self.hls_code = postprocess_hls_code(self.hls_code, self.mode, self.top_func_name)
                 for lib in self.ext_libs:
                     for header in lib.headers:
                         header = header.split("/")[-1]
                         with open(
                             f"{project}/{header}", "r", encoding="utf-8"
                         ) as infile:
-                            new_code = postprocess_hls_code(infile.read())
+                            new_code = postprocess_hls_code(infile.read(), self.mode)
                         with open(
                             f"{project}/{header}", "w", encoding="utf-8"
                         ) as outfile:
@@ -297,7 +302,7 @@ class HLSModule:
                         with open(
                             f"{project}/{cpp_file}", "r", encoding="utf-8"
                         ) as infile:
-                            new_code = postprocess_hls_code(infile.read())
+                            new_code = postprocess_hls_code(infile.read(), self.mode)
                         with open(
                             f"{project}/{cpp_file}", "w", encoding="utf-8"
                         ) as outfile:
@@ -431,13 +436,14 @@ class HLSModule:
                     headers=[f"{cwd}/{self.project}/kernel.h"],
                     impls=[f"{cwd}/{self.project}/kernel.cpp"],
                     signature=[
-                        f"{dtype}[{', '.join(shape)}]" for dtype, shape in self.args
+                        f"{dtype}[{', '.join(shape)}]" for _, dtype, shape in self.args
                     ],
                     link_hls=True,
                 )
                 mod(*args)
                 return
-            if self.mode == "csyn":
+            if self.mode in ["csyn", "csyn_verilator"]:
+                print(f"")
                 cmd = f"cd {self.project}; vitis_hls -f run.tcl"
                 print(
                     f"[{time.strftime('%H:%M:%S', time.gmtime())}] Begin synthesizing project ..."
@@ -446,6 +452,21 @@ class HLSModule:
                     subprocess.Popen(cmd, shell=True).wait()
                 else:
                     subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE).wait()
+                if self.mode == "csyn_verilator":
+                    # Once synthesis is complete, generate verilator model
+                    os.chdir(self.project)
+                    sim = pyverilator.PyVerilator.build(f'{self.top_func_name}.v',
+                        verilog_path = [os.getcwd()+f'/out.prj/solution1/impl/verilog'],
+                        add_verilator_args=['-Wno-WIDTH', '-Wno-STMTDLY', '--no-timing'])
+                    mod = pyverilator_ip.PyverilatorIPModule(
+                        top_func_name=self.top_func_name,
+                        pyverilator_sim=sim,
+                        signature=[f"{name} {dtype}[{', '.join(shape)}]" for name, dtype, shape in self.args]
+                    )
+                    mod(*args)
+                    os.chdir("..")
+                    if pyverilator_ip.ip_collection_mode:
+                        return mod
                 return
             # Use Makefile (sw_emu, hw_emu, hw)
             assert "XDEVICE" in os.environ, "Please set XDEVICE in your environment"
