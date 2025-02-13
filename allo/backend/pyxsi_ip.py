@@ -1,9 +1,11 @@
-import pyxsi
 import struct
 import numpy as np
 from abc import ABC, abstractmethod
 
 HALF_PERIOD = 5000
+
+ip_collection_mode = False
+mod_num = 1
 
 def int32_to_binary(n):
     """Convert an int32 number to its 32-bit binary representation."""
@@ -77,13 +79,13 @@ class ArrayApMemInterface(PythonRTLArgumentInterface):
         chip_en = int(chip_en, 2) if "X" not in chip_en else 0
         
         if self.direction == "MemRead":
-            # Write from numpy array into Verilator model
+            # Write from numpy array into xsi model
             if chip_en:
                 # Read data after one cycle
                 self.next_cycle_read = True
                 self.next_cycle_read_addr = array_addr
         elif self.direction == "MemWrite":
-            # Read out of Verilator model into numpy array
+            # Read out of xsi model into numpy array
             write_en = self.sim.get_port_value(f"{self.arg_name}_we0")
             write_en = int(write_en, 2) if "X" not in write_en else 0
             
@@ -105,6 +107,7 @@ class PyxsiIPModule:
         self.signature = signature
         self.dtype = dtype
         self.interface_map = {}
+        self.call_returns_self = False
 
     def parse_args(self, args):
         assert (len(args) == len(self.signature)), "Number of Python arguments do not match number of HLS arguments."
@@ -126,16 +129,89 @@ class PyxsiIPModule:
         self.clk_tick()
         self.sim.set_port_value("ap_rst", "0")
         self.clk_tick()
+        
+    def start_module(self):
         self.sim.set_port_value("ap_start", "1")
+        
+    def sync_module(self):
+        for intf in self.interface_map.values():
+            intf.sync_interface()
 
     def run_module(self):
         self.reset_module()
+        self.start_module()
         while self.sim.get_port_value("ap_done") != "1":
-            for intf in self.interface_map.values():
-                intf.sync_interface()
+            self.sync_module()
             self.clk_tick()
         self.sim.set_port_value("ap_start", "0")
 
     def __call__(self, *args):
         self.parse_args(args)
-        self.run_module()
+        if not ip_collection_mode:
+            self.run_module()
+            
+class ParallelIPModuleCollection:
+    def __init__(self, *pyxsi_ip_modules):
+        self.pyxsi_ip_modules = list(pyxsi_ip_modules)
+        
+    def reset_all_modules(self):
+        for ip_module in self.pyxsi_ip_modules:
+            ip_module.reset_module()
+            
+    def start_all_modules(self):
+        for ip_module in self.pyxsi_ip_modules:
+            ip_module.start_module()
+            
+    def run_all_modules(self):
+        def check_all_modules_done():
+            for ip_module in self.pyxsi_ip_modules:
+                if ip_module.sim.get_port_value("ap_done") != "1":
+                    return False
+            return True
+        
+        self.reset_all_modules()
+        self.start_all_modules()
+        while not check_all_modules_done():
+            # does each signal keep staying done HIGH, or is it only done HIGH for one cycle?
+            for ip_module in self.pyxsi_ip_modules:
+                ip_module.sync_module()
+                ip_module.clk_tick()
+        for ip_module in self.pyxsi_ip_modules:
+            ip_module.sim.set_port_value("ap_start", "0")
+            
+    def __call__(self, *args):
+        self.run_all_modules()
+
+class SequentialIPModuleCollection:
+    def __init__(self, *pyxsi_ip_modules):
+        self.pyxsi_ip_modules = list(pyxsi_ip_modules)
+        
+    def reset_all_modules(self):
+        for ip_module in self.pyxsi_ip_modules:
+            ip_module.reset_module()
+            
+    def run_all_modules(self):
+        self.reset_all_modules()
+        
+        for curr_ip_module in self.pyxsi_ip_modules:
+            curr_ip_module.start_module()
+            
+            while curr_ip_module.sim.get_port_value("ap_done") != "1":
+                # Sync and tick for all modules
+                for ip_module in self.pyxsi_ip_modules:
+                    ip_module.sync_module()
+                    ip_module.clk_tick()
+                    
+            curr_ip_module.sim.set_port_value("ap_start", "0")
+            
+    def __call__(self, *args):
+        self.run_all_modules()
+        
+class IPCollectionModeContext:
+    def __enter__(self):
+        global ip_collection_mode
+        ip_collection_mode = True
+        
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        global ip_collection_mode
+        ip_collection_mode = False

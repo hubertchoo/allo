@@ -20,7 +20,7 @@ add_files -norecurse [glob -nocomplain -directory $script_dir *.v]
 set_property top top_module_name [current_fileset -simset]
    
 # Launch simulation
-launch_simulation -help
+# launch_simulation -help
 set_property target_simulator "XSim" [current_project]
 launch_simulation
 

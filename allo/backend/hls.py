@@ -2,9 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 # pylint: disable=consider-using-with, no-name-in-module, unused-argument
 
+import pickle
 import pyverilator
-import pyxsi
+from ..harness.pyxsi import pyxsi
 import os
+import sys
 import shutil
 import re
 import io
@@ -30,6 +32,7 @@ from .ip import IPModule, c2allo_type
 from .pyverilator_ip import PyverilatorIPModule, ip_collection_mode
 from . import pyverilator_ip
 from .pyxsi_ip import PyxsiIPModule
+from . import pyxsi_ip
 from .report import parse_xml
 from ..passes import (
     _mlir_lower_pipeline,
@@ -43,13 +46,13 @@ from ..utils import get_func_inputs_outputs
 # from .. import primitives as prim
 
 
-def is_available(backend="vivado_hls"):
-    if backend == "vivado_hls":
-        return os.system("which vivado_hls >> /dev/null") == 0
-    return (
-        os.system("which vitis_hls >> /dev/null") == 0
-        # and os.environ.get("XDEVICE", None) is not None
-    )
+# def is_available(backend="vivado_hls"):
+#     if backend == "vivado_hls":
+#         return os.system("which vivado_hls >> /dev/null") == 0
+#     return (
+#         os.system("which vitis_hls >> /dev/null") == 0
+#         # and os.environ.get("XDEVICE", None) is not None
+#     )
 
 
 def run_process(cmd, pattern=None):
@@ -343,7 +346,7 @@ class HLSModule:
             return self.hls_code
         return f"HLSModule({self.top_func_name}, {self.mode}, {self.project})"
 
-    def __call__(self, *args, shell=True):
+    def __call__(self, *args, syn=True, shell=True):
         if self.platform == "vivado_hls":
             assert is_available("vivado_hls"), "vivado_hls is not available"
             ver = run_process("g++ --version", r"\d+\.\d+\.\d+")[0].split(".")
@@ -395,6 +398,39 @@ class HLSModule:
                 mod(*args)
                 return
             if self.mode in ["csyn", "csyn_verilator", "csyn_xsim"]:
+                if not syn:
+                    # Check if model configuration file exists
+                    config_path = fr"./{self.top_func_name}_mod_config.pkl"
+                    if not os.path.exists(config_path):
+                        print(f"\n\033[31mError: Model configuration file \033[0m\033[33m{self.top_func_name}_mod_config.pkl\033[0m \033[31mdoes not exist! Synthesize the model first.\033[0m\n")
+                        sys.exit(1)
+
+                    # Load the saved configuration
+                    print(f"\nLoading model \033[33m{self.top_func_name}\033[0m...")
+                    with open(fr"{self.top_func_name}_mod_config.pkl", "rb") as f:
+                        config = pickle.load(f)
+
+                    os.chdir(fr"./{self.project}/ip_out/ip_out.sim/sim_1/behav/xsim")
+                    sim = pyxsi.XSI(
+                        fr"{config['xsim_path']}",
+                        language=config["language"],
+                        tracefile=fr"{config['tracefile']}",
+                    )
+                    os.chdir("./../../../../../..")
+                    mod = PyxsiIPModule(
+                        top_func_name=config["top_func_name"],
+                        pyxsi_sim=sim,
+                        signature=config["signature"],
+                        dtype=config["dtype"]
+                    )
+                    print(f"Model \033[33m{self.top_func_name}\033[0m reloaded successfully!")
+                    mod(*args)
+                    
+                    if pyxsi_ip.ip_collection_mode:
+                        pyxsi_ip.mod_num += 1
+                        return mod
+                    return
+                    
                 cmd = f"cd {self.project}; vitis_hls -f run.tcl"
                 print(
                     f"[{time.strftime('%H:%M:%S', time.gmtime())}] Begin synthesizing project ..."
@@ -420,7 +456,6 @@ class HLSModule:
                     os.chdir("..")
                     if pyverilator_ip.ip_collection_mode:
                         return mod
-                    return
                 if self.mode == "csyn_xsim":
                     os.chdir(self.project)
                     # Path to the Tcl script
@@ -436,59 +471,62 @@ class HLSModule:
                                 # Replace "top_module_name" with "top_func_name"
                                 line = f'set_property top {self.top_func_name} [current_fileset -simset]\n'
                             file.write(line)
-                    # Once synthesis is complete and Tcl script is generated, generate xsim model for csyn_xsim mode
+                    # Once synthesis is complete and Tcl script is generated, generate XSim model for csyn_xsim mode
                     cmd = f"vivado -mode batch -source generate_ip_sim.tcl"
-                    
                     if shell:
                         subprocess.Popen(cmd, shell=True).wait()
                     else:
                         subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE).wait()
-                    
+
                     # Open the "elaborate.sh" file, read its contents, replace the string, and save the changes
                     # This is used to generate the xsimk.so file
                     os.chdir("./ip_out/ip_out.sim/sim_1/behav/xsim")
-                    
                     with open('elaborate.sh', 'r') as file:
                         content = file.read()
-                        
                     updated_content = content.replace('--debug typical', '--debug all -dll')
-
                     with open('elaborate.sh', 'w') as file:
                         file.write(updated_content)
-                        
                     cmd = f"bash elaborate.sh"
-                    
                     if shell:
                         subprocess.Popen(cmd, shell=True).wait()
                     else:
                         subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE).wait()
-                        
-                    # Run simulation on Verilator model
 
+                    # Save configuration file
                     os.chdir("./../../../../../..")
-                    destination_path = fr"./xsim.dir"
-                    source_path = fr"./{self.project}/ip_out/ip_out.sim/sim_1/behav/xsim/xsim.dir"
-                    if os.path.exists(destination_path):
-                        shutil.rmtree(destination_path)
-                    shutil.copytree(source_path, destination_path)
+                    print(f"\nSaving model \033[33m{self.top_func_name}\033[0m configuration...")
+                    config = {
+                        "top_func_name": self.top_func_name,
+                        "xsim_path": fr"./xsim.dir/{self.top_func_name}_behav/xsimk.so",
+                        "language": pyxsi.VERILOG,
+                        "tracefile": fr"./{self.top_func_name}_behav.wdb",
+                        "signature": [f"{name} {dtype}[{', '.join(shape)}]" for name, dtype, shape in self.args],
+                        "dtype": [f"{dtype}" for _, dtype, _ in self.args]
+                    }
+                    with open(fr"{config["top_func_name"]}_mod_config.pkl", "wb") as f:
+                        pickle.dump(config, f)
+                    print(f"Model \033[33m{self.top_func_name}\033[0m configuration saved successfully!")                    
                     
-                    destination_path = fr"./{self.top_func_name}_behav.wdb"
-                    source_path = fr"./{self.project}/ip_out/ip_out.sim/sim_1/behav/xsim/{self.top_func_name}_behav.wdb"
-                    shutil.copy(source_path, destination_path)
-                    
+                    # Generate the PyXSI model
+                    os.chdir(fr"./{self.project}/ip_out/ip_out.sim/sim_1/behav/xsim")
+                    print(os.getcwd())
                     sim = pyxsi.XSI(
-                        fr"./xsim.dir/{self.top_func_name}_behav/xsimk.so",
-                        language=pyxsi.VERILOG,
-                        tracefile=fr"./{self.top_func_name}_behav.wdb",
+                        config["xsim_path"],
+                        language=config["language"],
+                        tracefile=config["tracefile"],
                         )
+                    os.chdir("./../../../../../..")
                     mod = PyxsiIPModule(
-                        top_func_name=self.top_func_name,
+                        top_func_name=config["top_func_name"],
                         pyxsi_sim=sim,
-                        signature=[f"{name} {dtype}[{', '.join(shape)}]" for name, dtype, shape in self.args],
-                        dtype=[f"{dtype}" for _, dtype, _ in self.args]
+                        signature=config["signature"],
+                        dtype=config["dtype"]
                     )
                     mod(*args)
-                    return
+            
+                    if pyxsi_ip.ip_collection_mode:
+                        pyxsi_ip.mod_num += 1
+                        return mod
                 return
             # Use Makefile (sw_emu, hw_emu, hw)
             assert "XDEVICE" in os.environ, "Please set XDEVICE in your environment"
