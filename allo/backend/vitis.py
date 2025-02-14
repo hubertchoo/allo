@@ -360,14 +360,14 @@ def postprocess_hls_code(hls_code, mode=None, top=None):
             func_decl = False
             out_str += line + "\n"
             # Add extra interfaces
-            if (mode != "csyn_verilator"):
+            if (mode != "csyn_verilator" and mode != "csyn_xsim"):
                 for i, arg in enumerate(func_args):
                     out_str += f"  #pragma HLS interface m_axi port={arg} offset=slave bundle=gmem{i}\n"
         elif func_decl:
             dtype, var = line.strip().rsplit(" ", 1)
             comma = "," if var[-1] == "," else ""
             if "[" in var:  # array
-                if (mode == "csyn_verilator"):
+                if (mode == "csyn_verilator" or mode == "csyn_xsim"):
                     out_str += "  " + dtype + " " + var + "\n"
                 else:
                     var = var.split("[")[0]
