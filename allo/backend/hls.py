@@ -468,7 +468,7 @@ class HLSModule:
                     sim = pyxsi.XSI(
                         fr"{config['xsim_path']}",
                         language=config["language"],
-                        tracefile=fr"{config['tracefile']}",
+                        # tracefile=fr"{config['tracefile']}",
                     )
                     os.chdir("./../../../../../..")
                     mod = PyxsiIPModule(
@@ -565,7 +565,7 @@ class HLSModule:
                     sim = pyxsi.XSI(
                         config["xsim_path"],
                         language=config["language"],
-                        tracefile=config["tracefile"],
+                        # tracefile=config["tracefile"],
                         )
                     os.chdir("./../../../../../..")
                     mod = PyxsiIPModule(
