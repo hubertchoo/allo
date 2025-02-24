@@ -17,6 +17,7 @@ soda_*
 out
 rapidjson
 project_*
+tutorials/xsim_test/*build
 
 # Downloaded files
 *.params
