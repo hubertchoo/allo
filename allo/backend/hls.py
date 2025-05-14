@@ -8,6 +8,7 @@ from ..harness.pyxsi import pyxsi
 import os
 import sys
 import shutil
+import glob
 import re
 import io
 import subprocess
@@ -36,6 +37,7 @@ from .ip import IPModule, c2allo_type
 from . import pyverilator_ip
 from .pyxsi_ip import PyxsiIPModule
 from . import pyxsi_ip
+from ..harness.xsim import verilog_wrapper_gen
 from .report import parse_xml
 from ..passes import (
     _mlir_lower_pipeline,
@@ -165,6 +167,138 @@ def separate_header(hls_code, top=None):
     sig_str += "\n#endif // KERNEL_H\n"
     return sig_str, args
 
+def wrapper_gen_xsim(shell, total_args, mods):
+    wrapper_gen_pkl_file = "wrapper_gen_config.pkl"
+    if os.path.exists(wrapper_gen_pkl_file):
+        with open(wrapper_gen_pkl_file, 'rb') as f:
+            config = pickle.load(f)
+    syns = config["syns"]
+    paths = config["paths"]
+    src_verilog_dirs = config["src_verilog_dirs"]
+    dest_verilog_dir = config["dest_verilog_dir"]
+
+    if not any(syns):
+        # Check if model configuration file exists
+        mod_config_path = fr"./wrapper_mod_config.pkl"
+        if not os.path.exists(mod_config_path):
+            print(f"\n\033[31mError: Model configuration file \033[0m\033[33mwrapper_mod_config.pkl\033[0m \033[31mdoes not exist! Synthesize the model first.\033[0m\n")
+            sys.exit(1)
+            
+        # Load the saved configuration
+        print(f"\nLoading model \033[33mwrapper\033[0m...")
+        with open(fr"wrapper_mod_config.pkl", "rb") as f:
+            config = pickle.load(f)
+        print(f"Model \033[33mwrapper\033[0m reloaded successfully!")
+        
+        print(f"\n============================================================== wrapper_mod_config.pkl ==============================================================\n")
+        for key, value in config.items():
+            print(f"{key}: {value}")
+        print(f"\n====================================================================================================================================================\n")
+
+        # Generate the PyXSI model
+        os.chdir(fr"./wrapper_xsim.prj/ip_out/ip_out.sim/sim_1/behav/xsim")
+        sim = pyxsi.XSI(
+            config["xsim_path"],
+            language=config["language"],
+            )
+        os.chdir("./../../../../../..")
+        mod = PyxsiIPModule(
+            top_func_name=config["top_func_name"],
+            pyxsi_sim=sim,
+            signature=config["signature"],
+            dtype=config["dtype"],
+            mods= config["mods"],
+        )
+        print(f"PyXSI simulation \033[33mwrapper\033[0m created successfully")
+        return mod
+    else: # some syns
+        # Check if all the designs exists
+        existence = [os.path.exists(path) for path in src_verilog_dirs]
+        if not all(existence):
+            print("\033[31mSome designs are missing:\033[0m")
+            for src_verilog_dir, exists in zip(src_verilog_dirs, existence):
+                if not exists:
+                    print(f"\033[31mMissing design: {src_verilog_dir}\033[0m")
+            sys.exit(1)
+        # Create a new wrapper project
+        if os.path.exists("wrapper_xsim.prj"):
+            shutil.rmtree("wrapper_xsim.prj")
+        os.makedirs(dest_verilog_dir, exist_ok=True)
+        # Copy verilog files
+        for src_verilog_dir in src_verilog_dirs:
+            verilog_files = glob.glob(os.path.join(src_verilog_dir, "*"))
+            for file_path in verilog_files:
+                shutil.copy2(file_path, dest_verilog_dir)
+            print(f"Copied \033[33m{len(verilog_files)}\033[0m Verilog file(s) from \033[33m'{src_verilog_dir}'\033[0m to \033[33m{dest_verilog_dir}\033[0m.")
+        
+        # Generate the wrapper
+        verilog_files = paths
+        verilog_wrapper_gen.generate_wrapper(verilog_files, dest_verilog_dir)
+        print(f"\033[33mWrapper generated\033[0m")
+
+        # XSim simulation on the wrapper
+        os.system("cp " + "./../../../allo/harness/xsim/generate_ip_sim.tcl " + "wrapper_xsim.prj")
+        os.chdir("wrapper_xsim.prj")
+        tcl_script_path = "./generate_ip_sim.tcl"
+        with open(tcl_script_path, "r") as file:
+            lines = file.readlines()
+        with open(tcl_script_path, "w") as file:
+            for line in lines:
+                if line.strip().startswith("set_property top") and "current_fileset -simset" in line:
+                    line = f'set_property top wrapper [current_fileset -simset]\n'
+                file.write(line)
+        cmd = f"vivado -mode batch -source generate_ip_sim.tcl"
+        if shell:
+            subprocess.Popen(cmd, shell=True).wait()
+        else:
+            subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE).wait()
+
+        os.chdir("./ip_out/ip_out.sim/sim_1/behav/xsim")
+        with open('elaborate.sh', 'r') as file:
+            content = file.read()
+        updated_content = content.replace('--debug typical', '--debug all -dll')
+        with open('elaborate.sh', 'w') as file:
+            file.write(updated_content)
+        cmd = f"bash elaborate.sh"
+        if shell:
+            subprocess.Popen(cmd, shell=True).wait()
+        else:
+            subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE).wait()
+
+        # Save configuration file
+        os.chdir("./../../../../../..")
+        print(f"\nSaving model \033[33mwrapper\033[0m configuration...")
+        config = {
+            "top_func_name": "wrapper",
+            "xsim_path": fr"./xsim.dir/wrapper_behav/xsimk.so",
+            "language": pyxsi.VERILOG,
+            "signature": [ [f"{name} {dtype}[{', '.join(shape)}]" for name, dtype, shape in args] for args in total_args ],
+            "dtype": [ [f"{dtype}" for _, dtype, _ in args] for args in total_args ],
+            "mods": [ f"{mod}" for mod in mods ]
+        }
+        with open(fr"wrapper_mod_config.pkl", "wb") as f:
+            pickle.dump(config, f)
+        print(f"Model \033[33mwrapper\033[0m configuration saved successfully!") 
+        
+        # Generate the PyXSI model
+        os.chdir(fr"./wrapper_xsim.prj/ip_out/ip_out.sim/sim_1/behav/xsim")
+        sim = pyxsi.XSI(
+            config["xsim_path"],
+            language=config["language"],
+            )
+        os.chdir("./../../../../../..")
+        mod = PyxsiIPModule(
+            top_func_name=config["top_func_name"],
+            pyxsi_sim=sim,
+            signature=config["signature"],
+            dtype=config["dtype"],
+            mods= config["mods"],
+        )
+        print(f"PyXSI simulation \033[33mwrapper\033[0m created successfully")
+        return mod
+
+
+curr_mod_num = 0
 
 class HLSModule:
     def __init__(
@@ -400,7 +534,18 @@ class HLSModule:
             return self.hls_code
         return f"HLSModule({self.top_func_name}, {self.mode}, {self.project})"
 
-    def __call__(self, *args, syn=True, shell=True):
+    def __call__(self, *args, syn=True, num_mod=1, shell=True):
+        global curr_mod_num
+        curr_mod_num += 1
+        
+        if not isinstance(syn, bool):
+            print("\033[31m'syn' must be a boolean variable\033[0m")
+            sys.exit(1)
+    
+        if not (isinstance(num_mod, int) and num_mod >= 1):
+            print("\033[31m'num_mod' must be an integer >= 1\033[0m")
+            sys.exit(1)
+    
         if self.platform == "vivado_hls":
             assert is_available("vivado_hls"), "vivado_hls is not available"
             ver = run_process("g++ --version", r"\d+\.\d+\.\d+")[0].split(".")
@@ -451,37 +596,94 @@ class HLSModule:
                 )
                 mod(*args)
                 return
+            
             if self.mode in ["csyn", "csyn_verilator", "csyn_xsim"]:
+                
+                # Do not want to resynthesize model
                 if not syn:
-                    # Check if model configuration file exists
-                    config_path = fr"./{self.top_func_name}_mod_config.pkl"
-                    if not os.path.exists(config_path):
-                        print(f"\n\033[31mError: Model configuration file \033[0m\033[33m{self.top_func_name}_mod_config.pkl\033[0m \033[31mdoes not exist! Synthesize the model first.\033[0m\n")
-                        sys.exit(1)
-
-                    # Load the saved configuration
-                    print(f"\nLoading model \033[33m{self.top_func_name}\033[0m...")
-                    with open(fr"{self.top_func_name}_mod_config.pkl", "rb") as f:
-                        config = pickle.load(f)
-
-                    os.chdir(fr"./{self.project}/ip_out/ip_out.sim/sim_1/behav/xsim")
-                    sim = pyxsi.XSI(
-                        fr"{config['xsim_path']}",
-                        language=config["language"],
-                        # tracefile=fr"{config['tracefile']}",
-                    )
-                    os.chdir("./../../../../../..")
-                    mod = PyxsiIPModule(
-                        top_func_name=config["top_func_name"],
-                        pyxsi_sim=sim,
-                        signature=config["signature"],
-                        dtype=config["dtype"]
-                    )
-                    print(f"Model \033[33m{self.top_func_name}\033[0m reloaded successfully!")
-                    mod(*args)
+                    # Generate configuration file used for wrapper generation and simulation
+                    wrapper_prj = "wrapper_xsim.prj"
+                    wrapper_gen_pkl_file = 'wrapper_gen_config.pkl'
+                    dest_verilog_dir = os.path.join(wrapper_prj, "out.prj", "solution1", "syn", "verilog")
+                    src_verilog_dir = os.path.join(f"{self.top_func_name}_xsim.prj", "out.prj", "solution1", "syn", "verilog")
+                    new_path = os.path.join(dest_verilog_dir, f"{self.top_func_name}.v")
                     
-                    if pyxsi_ip.ip_collection_mode:
-                        pyxsi_ip.mod_num += 1
+                    if curr_mod_num == 1:
+                        if os.path.exists(wrapper_gen_pkl_file):
+                            os.remove(wrapper_gen_pkl_file)
+                    if os.path.exists(wrapper_gen_pkl_file):
+                        with open(wrapper_gen_pkl_file, 'rb') as f:
+                            config = pickle.load(f)                  
+                    else:
+                        syns = []
+                        paths = []
+                        src_verilog_dirs = []
+                        config = {
+                            "syns": syns,
+                            "paths": paths,
+                            "src_verilog_dirs": src_verilog_dirs,
+                            "dest_verilog_dir": dest_verilog_dir
+                        }
+                        
+                    if os.path.exists(src_verilog_dir):
+                        config['syns'].append(syn)
+                        config['paths'].append(new_path)
+                        config['src_verilog_dirs'].append(src_verilog_dir)
+                        with open(wrapper_gen_pkl_file, 'wb') as f:
+                            pickle.dump(config, f)
+                        print(f"New path \033[33m'{new_path}'\033[0m added for wrapper generation. Total paths now: \033[33m{len(config['paths'])}\033[0m")
+                    else:
+                        print(f"\033[31mFailed to add path\033[0m \033[33m'{new_path}'\033[0m \033[31mfor wrapper generation due to model not existing. Total paths now:\033[0m \033[33m{len(config['paths'])}\033[0m")
+                        sys.exit(1)
+                        
+                    # Store all the args to a pkl file
+                    print(f"Updating \033[33margs\033[0m in \033[33mwrapper_args.pkl\033[0m...")
+                    wrapper_args_pkl_file = 'wrapper_args.pkl'
+                    if curr_mod_num == 1:
+                        if os.path.exists(wrapper_args_pkl_file):
+                            os.remove(wrapper_args_pkl_file)
+                    if os.path.exists(wrapper_args_pkl_file):
+                        with open(wrapper_args_pkl_file, 'rb') as f:
+                            config = pickle.load(f)                         
+                    else:
+                        total_args = []
+                        mods = []
+                        config = {
+                            "total_args": total_args,
+                            "mods": mods
+                        } 
+                    
+                    config["total_args"].append(self.args)
+                    config["mods"].append(self.top_func_name)
+                    
+                    with open(wrapper_args_pkl_file, 'wb') as f:
+                        pickle.dump(config, f)
+                    print(f"Completed updating \033[33margs\033[0m in \033[33mwrapper_args.pkl\033[0m")
+                    
+                    # Store all the testbench input arguments data to a pkl file
+                    print(f"Updating \033[33margs_data\033[0m in \033[33mwrapper_args_data.pkl\033[0m...")
+                    wrapper_args_data_pkl_file = 'wrapper_args_data.pkl'
+                    if curr_mod_num == 1:
+                        if os.path.exists(wrapper_args_data_pkl_file):
+                            os.remove(wrapper_args_data_pkl_file)
+                    if os.path.exists(wrapper_args_data_pkl_file):
+                        with open(wrapper_args_data_pkl_file, 'rb') as f:
+                            args_data = pickle.load(f)                         
+                    else:
+                        args_data = []
+                    
+                    group_args = []
+                    for i, arg in enumerate(args):
+                        group_args.append(arg)
+                    args_data.append(group_args)
+                    
+                    with open(wrapper_args_data_pkl_file, 'wb') as f:
+                        pickle.dump(args_data, f)
+                    print(f"Completed updating \033[33margs_data\033[0m in \033[33mwrapper_args_data.pkl\033[0m")
+                    
+                    if curr_mod_num == num_mod:
+                        mod = wrapper_gen_xsim(shell, config["total_args"], config["mods"])
+                        mod(args_data)
                         return mod
                     return
                 
@@ -494,6 +696,7 @@ class HLSModule:
                     subprocess.Popen(cmd, shell=True).wait()
                 else:
                     subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE).wait()
+                    
                 if self.mode == "csyn_verilator":
                     # Once synthesis is complete, generate verilator model
                     os.chdir(self.project)
@@ -509,6 +712,7 @@ class HLSModule:
                     os.chdir("..")
                     if pyverilator_ip.ip_collection_mode:
                         return mod
+                    
                 if self.mode == "csyn_xsim":
                     os.chdir(self.project)
                     # Path to the Tcl script
@@ -552,34 +756,94 @@ class HLSModule:
                         "top_func_name": self.top_func_name,
                         "xsim_path": fr"./xsim.dir/{self.top_func_name}_behav/xsimk.so",
                         "language": pyxsi.VERILOG,
-                        "tracefile": fr"./{self.top_func_name}_behav.wdb",
                         "signature": [f"{name} {dtype}[{', '.join(shape)}]" for name, dtype, shape in self.args],
                         "dtype": [f"{dtype}" for _, dtype, _ in self.args]
                     }
                     with open(fr"{config["top_func_name"]}_mod_config.pkl", "wb") as f:
                         pickle.dump(config, f)
-                    print(f"Model \033[33m{self.top_func_name}\033[0m configuration saved successfully!")                    
+                    print(f"Model \033[33m{self.top_func_name}\033[0m configuration saved successfully!") 
                     
-                    # Generate the PyXSI model
-                    os.chdir(fr"./{self.project}/ip_out/ip_out.sim/sim_1/behav/xsim")
-                    sim = pyxsi.XSI(
-                        config["xsim_path"],
-                        language=config["language"],
-                        # tracefile=config["tracefile"],
-                        )
-                    os.chdir("./../../../../../..")
-                    mod = PyxsiIPModule(
-                        top_func_name=config["top_func_name"],
-                        pyxsi_sim=sim,
-                        signature=config["signature"],
-                        dtype=config["dtype"]
-                    )
-                    mod(*args)
-            
-                    if pyxsi_ip.ip_collection_mode:
-                        pyxsi_ip.mod_num += 1
+                    # Generate configuration file used for wrapper generation and simulation
+                    wrapper_prj = "wrapper_xsim.prj"
+                    wrapper_gen_pkl_file = 'wrapper_gen_config.pkl'
+                    dest_verilog_dir = os.path.join(wrapper_prj, "out.prj", "solution1", "syn", "verilog")
+                    src_verilog_dir = os.path.join(f"{self.top_func_name}_xsim.prj", "out.prj", "solution1", "syn", "verilog")
+                    new_path = os.path.join(dest_verilog_dir, f"{self.top_func_name}.v")
+                    
+                    if curr_mod_num == 1:
+                        if os.path.exists(wrapper_gen_pkl_file):
+                            os.remove(wrapper_gen_pkl_file)
+                    if os.path.exists(wrapper_gen_pkl_file):
+                        with open(wrapper_gen_pkl_file, 'rb') as f:
+                            config = pickle.load(f)                            
+                    else:
+                        syns = []
+                        paths = []
+                        src_verilog_dirs = []
+                        config = {
+                            "syns": syns,
+                            "paths": paths,
+                            "src_verilog_dirs": src_verilog_dirs,
+                            "dest_verilog_dir": dest_verilog_dir
+                        }
+                    config["syns"].append(syn)
+                    config["paths"].append(new_path)
+                    config["src_verilog_dirs"].append(src_verilog_dir)
+                    with open(wrapper_gen_pkl_file, 'wb') as f:
+                        pickle.dump(config, f)
+                    print(f"New path \033[33m'{new_path}'\033[0m added for wrapper generation. Total paths now: \033[33m{len(config["paths"])}\033[0m")
+                    
+                    # Store all the args to a pkl file
+                    print(f"Updating \033[33margs\033[0m in \033[33mwrapper_args.pkl\033[0m...")
+                    wrapper_args_pkl_file = 'wrapper_args.pkl'
+                    if curr_mod_num == 1:
+                        if os.path.exists(wrapper_args_pkl_file):
+                            os.remove(wrapper_args_pkl_file)
+                    if os.path.exists(wrapper_args_pkl_file):
+                        with open(wrapper_args_pkl_file, 'rb') as f:
+                            config = pickle.load(f)                         
+                    else:
+                        total_args = []
+                        mods = []
+                        config = {
+                            "total_args": total_args,
+                            "mods": mods
+                        } 
+                    
+                    config["total_args"].append(self.args)
+                    config["mods"].append(self.top_func_name)
+                    
+                    with open(wrapper_args_pkl_file, 'wb') as f:
+                        pickle.dump(config, f)
+                    print(f"Completed updating \033[33margs\033[0m in \033[33mwrapper_args.pkl\033[0m")
+                    
+                    # Store all the testbench input arguments data to a pkl file
+                    print(f"Updating \033[33margs_data\033[0m in \033[33mwrapper_args_data.pkl\033[0m...")
+                    wrapper_args_data_pkl_file = 'wrapper_args_data.pkl'
+                    if curr_mod_num == 1:
+                        if os.path.exists(wrapper_args_data_pkl_file):
+                            os.remove(wrapper_args_data_pkl_file)
+                    if os.path.exists(wrapper_args_data_pkl_file):
+                        with open(wrapper_args_data_pkl_file, 'rb') as f:
+                            args_data = pickle.load(f)                         
+                    else:
+                        args_data = []
+                    
+                    group_args = []
+                    for i, arg in enumerate(args):
+                        group_args.append(arg)
+                    args_data.append(group_args)
+                    
+                    with open(wrapper_args_data_pkl_file, 'wb') as f:
+                        pickle.dump(args_data, f)
+                    print(f"Completed updating \033[33margs_data\033[0m in \033[33mwrapper_args_data.pkl\033[0m")
+                    
+                    if curr_mod_num == num_mod:
+                        mod = wrapper_gen_xsim(shell, config["total_args"], config["mods"])        
+                        mod(args_data)
                         return mod
                 return
+            
             # Use Makefile (sw_emu, hw_emu, hw)
             assert "XDEVICE" in os.environ, "Please set XDEVICE in your environment"
             # prepare data
